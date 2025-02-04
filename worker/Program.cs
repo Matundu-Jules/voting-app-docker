@@ -16,8 +16,28 @@ namespace Worker
         {
             try
             {
-                var pgsql = OpenDbConnection("Server=localhost;Username=postgres;Password=postgres;");
-                var redisConn = OpenRedisConnection("localhost");
+                var postgresHost = Environment.GetEnvironmentVariable("POSTGRES_HOST");
+                var postgresUser = Environment.GetEnvironmentVariable("POSTGRES_USER");
+                var postgresPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
+                var postgresDb = Environment.GetEnvironmentVariable("POSTGRES_DB");
+
+                // Nouvelle chaîne de connexion compatible avec Npgsql
+                var postgresConnectionString = $"Host={postgresHost};Username={postgresUser};Password={postgresPassword};Database={postgresDb}";
+
+                var pgsql = OpenDbConnection(postgresConnectionString);
+
+
+                var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL");
+                var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST");
+
+                Console.WriteLine($"Connecting to Postgres: {postgresConnectionString}");
+                Console.WriteLine($"Connecting to Redis: {redisUrl}");
+
+                // Connexion à Redis
+                var redisConn = OpenRedisConnection(redisHost);
+
+
+
                 var redis = redisConn.GetDatabase();
 
                 var keepAliveCommand = pgsql.CreateCommand();
@@ -90,12 +110,15 @@ namespace Worker
 
             Console.Error.WriteLine("Connected to db");
 
-            var command = connection.CreateCommand();
-            command.CommandText = @"CREATE TABLE IF NOT EXISTS votes (
-                                        id VARCHAR(255) NOT NULL UNIQUE,
-                                        vote VARCHAR(255) NOT NULL
-                                    )";
-            command.ExecuteNonQuery();
+            // ✅ Création de la table "votes" si elle n'existe pas
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = @"CREATE TABLE IF NOT EXISTS votes (
+                                            id VARCHAR(255) PRIMARY KEY,
+                                            vote VARCHAR(255) NOT NULL
+                                        )";
+                command.ExecuteNonQuery();
+            }
 
             return connection;
         }
@@ -133,20 +156,20 @@ namespace Worker
             var command = connection.CreateCommand();
             try
             {
-                command.CommandText = "INSERT INTO votes (id, vote) VALUES (@id, @vote)";
+                command.CommandText = "INSERT INTO votes (id, vote) VALUES (@id, @vote) ON CONFLICT (id) DO UPDATE SET vote = EXCLUDED.vote;";
                 command.Parameters.AddWithValue("@id", voterId);
                 command.Parameters.AddWithValue("@vote", vote);
                 command.ExecuteNonQuery();
             }
-            catch (DbException)
+            catch (DbException ex)
             {
-                command.CommandText = "UPDATE votes SET vote = @vote WHERE id = @id";
-                command.ExecuteNonQuery();
+                Console.Error.WriteLine($"Database error: {ex.Message}");
             }
             finally
             {
                 command.Dispose();
             }
         }
+
     }
 }
