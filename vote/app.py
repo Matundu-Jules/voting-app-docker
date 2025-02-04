@@ -9,17 +9,23 @@ import logging
 option_a = os.getenv('OPTION_A', "Cats")
 option_b = os.getenv('OPTION_B', "Dogs")
 hostname = socket.gethostname()
-redis_host = os.getenv("REDIS_HOST", "redis")  # Connexion Redis
-flask_host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")  # Hôte Flask
-flask_port = int(os.getenv("FLASK_RUN_PORT", 8080))  # Port Flask
-flask_debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"  # Mode Debug
+
+redis_host = os.getenv("REDIS_HOST")  # Connexion Redis
+redis_port = int(os.getenv("REDIS_PORT"))
+redis_password = os.getenv("REDIS_PASSWORD")
+
+redis_url = f"redis://:{redis_password}@{redis_host}:{redis_port}"
+
+flask_host = os.getenv("FLASK_RUN_HOST")  # Hôte Flask
+flask_port = int(os.getenv("FLASK_RUN_PORT"))  # Port Flask
+flask_debug = os.getenv("FLASK_DEBUG").lower() == "true"  # Mode Debug
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 
 def get_redis():
     if not hasattr(Flask, 'redis'):
-        Flask.redis = Redis(host=redis_host, db=0, socket_timeout=5)
+        Flask.redis = Redis.from_url(redis_url, decode_responses=True)
     return Flask.redis
 
 @app.route("/", methods=['POST', 'GET'])

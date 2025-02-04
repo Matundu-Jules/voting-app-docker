@@ -11,6 +11,19 @@ services:
       - frontend
       - backend
 
+  worker:
+    build: ./worker
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: always
+
   result:
     build: ./result
     ports:
@@ -21,24 +34,13 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       vote:
         condition: service_started
     networks:
       - frontend
       - backend
-
-  worker:
-    build: ./worker
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - backend
+    restart: always
 
   db:
     image: postgres:latest
@@ -61,12 +63,21 @@ services:
   redis:
     image: redis:latest
     restart: always
+    env_file:
+      - .env
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./db/redis.conf:/usr/local/etc/redis/redis.conf
     networks:
       - backend
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   postgres_data:

@@ -16,28 +16,27 @@ namespace Worker
         {
             try
             {
+                // Récupération des variables d'environnement pour PostgreSQL
                 var postgresHost = Environment.GetEnvironmentVariable("POSTGRES_HOST");
                 var postgresUser = Environment.GetEnvironmentVariable("POSTGRES_USER");
                 var postgresPassword = Environment.GetEnvironmentVariable("POSTGRES_PASSWORD");
                 var postgresDb = Environment.GetEnvironmentVariable("POSTGRES_DB");
+                var postgresPort = Environment.GetEnvironmentVariable("POSTGRES_PORT");
 
-                // Nouvelle chaîne de connexion compatible avec Npgsql
-                var postgresConnectionString = $"Host={postgresHost};Username={postgresUser};Password={postgresPassword};Database={postgresDb}";
+                var postgresConnectionString = $"Host={postgresHost};Port={postgresPort};Username={postgresUser};Password={postgresPassword};Database={postgresDb}";
 
-                var pgsql = OpenDbConnection(postgresConnectionString);
-
-
-                var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL");
+                // Récupération des variables d'environnement pour Redis
                 var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST");
+                var redisPort = Environment.GetEnvironmentVariable("REDIS_PORT");
+                var redisPassword = Environment.GetEnvironmentVariable("REDIS_PASSWORD");
+                var redisUrl = Environment.GetEnvironmentVariable("REDIS_URL");
 
-                Console.WriteLine($"Connecting to Postgres: {postgresConnectionString}");
-                Console.WriteLine($"Connecting to Redis: {redisUrl}");
+                Console.WriteLine($"Connecting to Postgres: Host={postgresHost}");
+                Console.WriteLine($"Connecting to Redis: {redisHost}");
 
-                // Connexion à Redis
-                var redisConn = OpenRedisConnection(redisHost);
-
-
-
+                // Connexion à Postgre et Redis
+                var pgsql = OpenDbConnection(postgresConnectionString);
+                var redisConn = OpenRedisConnection(redisHost, redisPort, redisPassword);
                 var redis = redisConn.GetDatabase();
 
                 var keepAliveCommand = pgsql.CreateCommand();
@@ -50,10 +49,11 @@ namespace Worker
 
                     // Se reconnecter à Redis si la connexion est perdue
                     if (redisConn == null || !redisConn.IsConnected) {
-                        Console.WriteLine("Reconnecting Redis");
-                        redisConn = OpenRedisConnection("localhost");
+                        Console.WriteLine("⚠️ Redis connection lost. Reconnecting...");
+                        redisConn = OpenRedisConnection(redisHost, redisPort, redisPassword);
                         redis = redisConn.GetDatabase();
                     }
+
                     string json = redis.ListLeftPopAsync("votes").Result;
                     if (json != null)
                     {
@@ -63,8 +63,8 @@ namespace Worker
                         // Se reconnecter à PostgreSQL si la connexion est perdue
                         if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
-                            Console.WriteLine("Reconnecting DB");
-                            pgsql = OpenDbConnection("Server=localhost;Username=postgres;Password=postgres;");
+                            Console.WriteLine("⚠️ PostgreSQL connection lost. Reconnecting...");
+                            pgsql = OpenDbConnection(postgresConnectionString);
                         }
                         else
                         {
@@ -79,7 +79,7 @@ namespace Worker
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(ex.ToString());
+                Console.Error.WriteLine($"❌ Error: {ex.Message}");
                 return 1;
             }
         }
@@ -87,6 +87,7 @@ namespace Worker
         private static NpgsqlConnection OpenDbConnection(string connectionString)
         {
             NpgsqlConnection connection;
+            int retryCount = 5; // Tentatives de reconnexion
 
             while (true)
             {
@@ -94,23 +95,28 @@ namespace Worker
                 {
                     connection = new NpgsqlConnection(connectionString);
                     connection.Open();
+                    Console.WriteLine("✅ Connected to PostgreSQL");
                     break;
                 }
                 catch (SocketException)
                 {
-                    Console.Error.WriteLine("Waiting for db");
-                    Thread.Sleep(1000);
+                    Console.Error.WriteLine("⏳ Waiting for PostgreSQL...");
+                    retryCount--;
+                    if (retryCount == 0) throw;
+                    Thread.Sleep(2000);
                 }
                 catch (DbException)
                 {
-                    Console.Error.WriteLine("Waiting for db");
-                    Thread.Sleep(1000);
+                    Console.Error.WriteLine("⏳ Waiting for PostgreSQL...");
+                    retryCount--;
+                    if (retryCount == 0) throw;
+                    Thread.Sleep(2000);
                 }
             }
 
-            Console.Error.WriteLine("Connected to db");
+            Console.Error.WriteLine("📌 PostgreSQL connection established");
 
-            // ✅ Création de la table "votes" si elle n'existe pas
+            // Création de la table "votes" si elle n'existe pas
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = @"CREATE TABLE IF NOT EXISTS votes (
@@ -123,26 +129,33 @@ namespace Worker
             return connection;
         }
 
-        private static ConnectionMultiplexer OpenRedisConnection(string hostname)
+        private static ConnectionMultiplexer OpenRedisConnection(string hostname, string port, string password)
         {
-            // Use IP address to workaround https://github.com/StackExchange/StackExchange.Redis/issues/410
-            var ipAddress = GetIp(hostname);
-            Console.WriteLine($"Found redis at {ipAddress}");
+            string redisConnectionString = password != null
+                ? $"{hostname}:{port},password={password},abortConnect=false"
+                : $"{hostname}:{port},abortConnect=false";
+
+            Console.WriteLine($"🔗 Connecting to Redis");
 
             while (true)
             {
                 try
                 {
-                    Console.Error.WriteLine("Connecting to redis");
-                    return ConnectionMultiplexer.Connect(ipAddress);
+                    var redisConn = ConnectionMultiplexer.Connect(redisConnectionString);
+                    if (redisConn.IsConnected)
+                    {
+                        Console.WriteLine("✅ Connected to Redis");
+                        return redisConn;
+                    }
                 }
-                catch (RedisConnectionException)
+                catch (RedisConnectionException ex)
                 {
-                    Console.Error.WriteLine("Waiting for redis");
+                    Console.Error.WriteLine($"⏳ Waiting for Redis... {ex.Message}");
                     Thread.Sleep(1000);
                 }
             }
         }
+
 
         private static string GetIp(string hostname)
             => Dns.GetHostEntryAsync(hostname)
@@ -163,7 +176,7 @@ namespace Worker
             }
             catch (DbException ex)
             {
-                Console.Error.WriteLine($"Database error: {ex.Message}");
+                Console.Error.WriteLine($"❌ Database error: {ex.Message}");
             }
             finally
             {

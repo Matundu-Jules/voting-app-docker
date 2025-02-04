@@ -1,84 +1,100 @@
-let express = require('express'),
-  async = require('async'),
-  pg = require('pg'),
-  path = require('path'),
-  cookieParser = require('cookie-parser'),
-  bodyParser = require('body-parser'),
-  methodOverride = require('method-override'),
-  app = express(),
-  server = require('http').Server(app),
-  io = require('socket.io')(server);
+const express = require('express');
+const { Pool } = require('pg');
+const path = require('path');
+const cookieParser = require('cookie-parser');
+const bodyParser = require('body-parser');
+const methodOverride = require('method-override');
+const http = require('http');
+const socketIo = require('socket.io');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, { transports: ['polling'] });
 
 io.set('transports', ['polling']);
 
-const port = 8888;
+const PORT = process.env.NODE_PORT;
 
-io.sockets.on('connection', function (socket) {
+const dbConfig = {
+  user: process.env.POSTGRES_USER,
+  host: process.env.POSTGRES_HOST,
+  database: process.env.POSTGRES_DB,
+  password: process.env.POSTGRES_PASSWORD,
+  port: process.env.POSTGRES_PORT,
+  max: 10, // Limite de connexions simultanées
+  idleTimeoutMillis: 30000, // Timeout d'inactivité
+  connectionTimeoutMillis: 5000, // Timeout de connexion
+};
+
+let pool;
+
+// Fonction de connexion avec gestion des erreurs
+async function connectDB(retries = 5, delay = 2000) {
+  while (retries > 0) {
+    try {
+      pool = new Pool(dbConfig);
+      await pool.query('SELECT 1');
+      console.log('✅ Connected to db');
+      return;
+    } catch (err) {
+      console.error(
+        `❌ Database connection failed. Retrying in ${delay / 1000}s... (${retries} attempts left)`
+      );
+      retries--;
+      await new Promise((res) => setTimeout(res, delay));
+      delay *= 2; // Augmente le délai à chaque tentative
+    }
+  }
+  console.error('🚨 Could not connect to the database. Exiting.');
+  process.exit(1);
+}
+
+// Gestion des connexions Socket.io
+io.on('connection', (socket) => {
   socket.emit('message', { text: 'Welcome!' });
 
-  socket.on('subscribe', function (data) {
+  socket.on('subscribe', (data) => {
     socket.join(data.channel);
   });
 });
 
-const pool = new pg.Pool({
-  connectionString: process.env.POSTGRES_URL,
-});
-
-async.retry(
-  { times: 1000, interval: 1000 },
-  function (callback) {
-    pool.connect(function (err, client, done) {
-      if (err) {
-        console.log(process.env.POSTGRES_URL);
-        console.error('Waiting for db');
-      }
-      callback(err, client);
-    });
-  },
-  function (err, client) {
-    if (err) {
-      return console.error('Giving up');
-    }
-    console.log('Connected to db');
-    getVotes(client);
+// Attendre la connexion à la base avant de récupérer les votes
+async function getVotes() {
+  if (!pool) {
+    console.error('❌ Database connection not available.');
+    return;
   }
-);
 
-function getVotes(client) {
-  client.query(
-    'SELECT vote, COUNT(id) AS count FROM votes GROUP BY vote',
-    [],
-    function (err, result) {
-      if (err) {
-        console.error('Error performing query: ' + err);
-      } else {
-        const votes = collectVotesFromResult(result);
-        io.sockets.emit('scores', JSON.stringify(votes));
-      }
-
-      setTimeout(function () {
-        getVotes(client);
-      }, 1000);
-    }
-  );
+  try {
+    const result = await pool.query(
+      'SELECT vote, COUNT(id) AS count FROM votes GROUP BY vote'
+    );
+    const votes = collectVotesFromResult(result);
+    io.sockets.emit('scores', JSON.stringify(votes));
+  } catch (err) {
+    onsole.error('⚠️ Error performing query:', err.message);
+  } finally {
+    setTimeout(getVotes, 1000);
+  }
 }
 
+// Fonction de formatage des votes
 function collectVotesFromResult(result) {
   const votes = { a: 0, b: 0 };
 
-  result.rows.forEach(function (row) {
+  result.rows.forEach((row) => {
     votes[row.vote] = parseInt(row.count);
   });
 
   return votes;
 }
 
+// Middleware
 app.use(cookieParser());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(methodOverride('X-HTTP-Method-Override'));
-app.use(function (req, res, next) {
+app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header(
     'Access-Control-Allow-Headers',
@@ -90,11 +106,13 @@ app.use(function (req, res, next) {
 
 app.use(express.static(__dirname + '/views'));
 
-app.get('/', function (req, res) {
+app.get('/', (req, res) => {
   res.sendFile(path.resolve(__dirname + '/views/index.html'));
 });
 
-server.listen(port, function () {
-  const port = server.address().port;
-  console.log('App running on port ' + port);
+// Démarrage du serveur
+server.listen(PORT, async () => {
+  console.log(`🚀 App running on port ${PORT}`);
+  await connectDB(); // Lancer la connexion à PostgreSQL
+  getVotes(); // Démarrer la récupération des votes après la connexion DB
 });
