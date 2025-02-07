@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  vote:
+    image: iamyoda/vote-app:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - frontend
+      - backend
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  worker:
+    image: iamyoda/worker-app:latest
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - db
+    networks:
+      - backend
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  result:
+    image: iamyoda/result-app:latest
+    ports:
+      - "8888:8888"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+      - vote
+    networks:
+      - frontend
+      - backend
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  db:
+    image: postgres:latest
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  redis:
+    image: redis:latest
+    env_file:
+      - .env
+    command: sh -c "redis-server --requirepass $$REDIS_PASSWORD"
+    volumes:
+      - redis_data:/data
+      - ./db/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - backend
+    deploy:
+      replicas: 1
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  frontend:
+  backend:
