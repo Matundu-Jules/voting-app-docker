@@ -28,7 +28,7 @@ Une fois l’application démarrée, vous pouvez accéder aux interfaces suivant
 
 **Vote** (soumettre un vote) : http://localhost:8080
 
-**Résultats** (voir les résultats en temps réel) : http://localhost:5000
+**Résultats** (voir les résultats en temps réel) : http://localhost:8888
 
 
 Vérifiez que les services sont bien en cours d’exécution avec :
